@@ -1,0 +1,335 @@
+---
+title: "Diabetes_Pregnancies"
+author: "CGR"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(tableone)
+library(dplyr)
+library(skimr)
+library(MASS)
+library(knitr)
+library(mice)
+library(VIM)
+library(kableExtra)
+library(broom)
+library(plotly)
+library(rms)
+```
+
+https://www.canva.com/design/DAFSZu3OyXI/lWBhOHGLQsojdmEsbCrSSQ/view?utm_content=DAFSZu3OyXI&utm_campaign=designshare&utm_medium=link&utm_source=publishsharelink
+
+#### Data Load
+```{r}
+dat1 <- read.csv("diabetes2.csv", header=T, 
+                 fill = T, 
+                 dec = ".", 
+                 sep = ",")
+
+#Original Data Missingness
+dat1$BMI[dat1$BMI == 0] <- NA
+dat1$BloodPressure[dat1$BloodPressure == 0] <- NA
+dat1$SkinThickness[dat1$SkinThickness == 0] <- NA
+dat1$Insulin[dat1$Insulin == 0] <- NA
+```
+
+
+
+#### *which predictors are important and which are not?*
+```{r}
+dat1fit1 <- lrm(Outcome ~ Pregnancies +Glucose +BMI + BloodPressure +SkinThickness +Insulin + DiabetesPedigreeFunction + Age ,data=dat1)
+```
+
+```{r}
+plot(anova(dat1fit1))
+```
+Glucose, BMI, Pregnancies, DiabetesPedigreeFunction, and Blood Pressure are all important predictors that have p-values less than 0.05. 
+
+```{r}
+dat <- dat1[, -c(2:5,7)]
+dat <- na.omit(dat)
+
+dat2 <- dat1[, -c(3:5,7)] #smaller dataset, keeping Glucose in
+dat2 <- na.omit(dat2)
+```
+
+#### Glimpse
+```{r}
+dat$Outcome <- as.logical(dat$Outcome)
+dat2$Outcome <- as.logical(dat2$Outcome)
+glimpse(dat)
+glimpse(dat2)
+```
+
+#### Descriptive Statistics
+
+Outcome 
+Categorical Binary Variable:
+Outcome: no diabetes = 0; diabetes= 1
+
+Exposure 
+Quantitative Variables: 
+Pregnancies:  # of times pregnant (discrete)
+Age: years (continuous)
+BMI: Body Mass Index kg/ m^2 (continuous)
+
+
+```{r}
+summary(dat)
+skimr::skim(dat, c(1:3)) %>%
+  dplyr::select(skim_variable, skim_type, numeric.mean, numeric.sd,numeric.hist) %>% kbl (col.names = c("Variable Name", "Variable Type", "Mean", "Standard Deviation", "Histogram"), digits=2, caption="Overview of Numerical Variables") %>% kable_classic
+```
+
+Boxplots are a better way of looking at the Intraquartile Range (IQR, 25th and 75th percentiles)
+```{r}
+#boxplot
+ggplot(dat, aes(x=Outcome, y=Pregnancies)) +
+  geom_boxplot()
+```
+
+```{r}
+ggplot(dat, aes(x=Outcome, y=Age)) +
+  geom_boxplot()
+```
+
+```{r}
+ggplot(dat, aes(x=Outcome, y=BMI)) +
+  geom_boxplot()
+```
+
+```{r}
+CreateTableOne(vars=c("Pregnancies", "Age","BMI", "Outcome"),strata = "Outcome",
+               data=dat)
+```
+
+#### Logistic Regression via Generalized Linear Models 
+The logisitic regression makes several assumptions:
+https://www.statisticssolutions.com/free-resources/directory-of-statistical-analyses/assumptions-of-logistic-regression/
+
+1. dependent variable is binary
+2. observations must be independent of each other and should not come from repeated measurements or matched data
+3. little or no multicollinearity among the independent variables
+```{r}
+cor.test(x=dat$Pregnancies, y=dat$BMI)
+cor.test(x=dat$Pregnancies, y=dat$Age)
+corrplot::corrplot(cor(dat))
+```
+Multicollinearity affects the coefficients and p-values, but it does not influence the predictions, precision of the predictions, and the goodness-of-fit statistics. If your primary goal is to make predictions, and you don’t need to understand the role of each independent variable, you don’t need to reduce severe multicollinearity.
+
+
+
+5. large sample size: need a minimum of 10 cases with the least frequent outcome for each independent variable in your model ??
+
+```{r}
+summary(dat) 
+#At least 10 with diabetes and without diabetes
+```
+
+
+#### Model Selection, and testing diagnostic capacity
+
+```{r}
+
+reg <- glm(Outcome ~ Pregnancies + BMI + Age, data=dat, family = "binomial" ) 
+summary(reg)
+
+model <- glm(Outcome ~ Pregnancies + BMI + Age + Glucose, data=dat2, family = "binomial" ) 
+summary(model)
+
+aic1 <- AIC(reg)
+aic2 <- AIC(model)
+
+
+aics <- unlist(list(aic1, aic2))
+plot(aics, type = "b",pch= 19, col= ifelse(aics == min(aics), "red", "black"), xlab = "Model Number", ylab = "AIC", main ="Model Selection AIC")
+```
+
+```{r}
+a <- predict(reg, dat, type="response")
+b <- predict(model, dat2, type="response")
+
+roc.t <- pROC::roc(dat$Outcome ~ a,ci=T)
+roc.t2 <- pROC::roc(dat2$Outcome ~ b,ci=T)
+roc.t$auc
+roc.t2$auc
+
+
+```
+
+```{r}
+options(scipen=100)
+source('val_prob_ci_2_jce_9040_mmc3.R')
+val.prob.ci.2(reg$fitted.values, dat$Outcome)
+val.prob.ci.2(model$fitted.values, dat2$Outcome)
+```
+
+
+predicted risk: the probability that you have diabetes
+```{r}
+
+dat$pi0 <- predict(reg, type="response")
+dat2$pi0 <- predict(model, type="response")
+```
+
+The mean risk is:
+```{r}
+mean(dat$pi0)
+mean(dat2$pi0)
+```
+
+
+The risk distribution by event:
+```{r, eval=FALSE}
+ggplot(dat,aes(x=pi0)) + geom_density() + facet_grid(Outcome~.)
+ggplot(dat2,aes(x=pi0)) + geom_density() + facet_grid(Outcome~.)
+```
+We see from the risk distribution plot that the peak is higher on the FALSE plot. 
+
+We see that we tend to give women who will develop diabetes a higher risk score.
+
+
+
+
+Often 10% risk is regarded as high risk. What is the sensitivity and specificity if you use 10% as cutoff?
+
+Here we view the outcome on top in columns and the risk classification in rows. Among those who develop disease we assign 56% as high risk. Among those who do not develop disease we classify 75% as low risk.
+
+```{r}
+prop.table(table(dat$pi0>.08,dat$Outcome),2)
+prop.table(table(dat2$pi0>.08,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.1,dat$Outcome),2)
+prop.table(table(dat2$pi0>.1,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.2,dat$Outcome),2)
+prop.table(table(dat2$pi0>.2,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.3,dat$Outcome),2)
+prop.table(table(dat2$pi0>.3,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.35,dat$Outcome),2)
+prop.table(table(dat2$pi0>.35,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.37,dat$Outcome),2)
+prop.table(table(dat2$pi0>.37,dat2$Outcome),2)
+```
+
+```{r}
+prop.table(table(dat$pi0>.4,dat$Outcome),2)
+prop.table(table(dat2$pi0>.4,dat2$Outcome),2)
+```
+
+
+
+```{r}
+## Optional ##
+
+## However, the cut off point of 0.50, while commonly used and logical,
+## is arbitrarily chosen. How do we choose a cut off point that well
+## categorizes our observations?? ##
+cp <- seq(0,1,by=0.01) #potential cutoff values
+sn <- vector("double",length(cp)) #sensitivity
+sp <- vector("double",length(cp)) #specificity
+for(i in 1:length(cp)){
+  tab <- table(dat$Outcome,dat$pi0 > cp[i])
+  sp[i] <- ifelse(dim(tab)[2] == 1,0,tab[1,1]/sum(tab[1,]))
+  sn[i] <- ifelse(dim(tab)[2] == 1,0,tab[2,2]/sum(tab[2,]))
+}
+p <- ggplot() +
+  geom_line(aes(x = cp, y = sn),color='blue') + #sensitivity in blue
+  geom_line(aes(x = cp, y = sp),color='red') + #specificity in red
+  theme_classic() + labs(x = "Cut Points") 
+plotly::ggplotly(p)
+```
+
+```{r}
+## Optional ##
+
+## However, the cut off point of 0.50, while commonly used and logical,
+## is arbitrarily chosen. How do we choose a cut off point that well
+## categorizes our observations?? ##
+cp <- seq(0,1,by=0.01) #potential cutoff values
+sn <- vector("double",length(cp)) #sensitivity
+sp <- vector("double",length(cp)) #specificity
+for(i in 1:length(cp)){
+  tab <- table(dat2$Outcome,dat2$pi0 > cp[i])
+  sp[i] <- ifelse(dim(tab)[2] == 1,0,tab[1,1]/sum(tab[1,]))
+  sn[i] <- ifelse(dim(tab)[2] == 1,0,tab[2,2]/sum(tab[2,]))
+}
+p <- ggplot() +
+  geom_line(aes(x = cp, y = sn),color='blue') + #sensitivity in blue
+  geom_line(aes(x = cp, y = sp),color='red') + #specificity in red
+  theme_classic() + labs(x = "Cut Points") 
+plotly::ggplotly(p)
+```
+```{r}
+prop.table(table(dat2$pi0>.33,dat2$Outcome),2)
+```
+
+
+```{r}
+tidy(reg, exp= TRUE, conf.int=TRUE)[-1,]
+```
+```{r}
+p <- 
+
+  broom::tidy(reg, conf.int=T,exponentiate=T)[-1,] %>%
+  ggplot(aes(x=term,y=estimate)) +
+  geom_errorbar(aes(ymin=conf.low,ymax=conf.high),width=0.1) +
+  geom_point() +
+  geom_hline(aes(yintercept = 1),color="black",linetype="dashed") +
+  labs(x = "Variable",
+       y = "Estimated Exponentiated Coefficient",
+       color = "Statistical \n Significance") +
+  theme_classic() + coord_flip() +
+  ggtitle("Confidence Intervals for Logistic Regression Analysis") +
+  theme(plot.title = element_text(hjust=0.5)) + 
+  theme(legend.position = "none")
+plotly::ggplotly(p)
+
+p
+```
+
+
+```{r}
+tidy(model, exp= TRUE, conf.int=TRUE)[-1,]
+```
+
+```{r}
+p <- 
+
+  broom::tidy(model, conf.int=T,exponentiate=T)[-1,] %>%
+  ggplot(aes(x=term,y=estimate)) +
+  geom_errorbar(aes(ymin=conf.low,ymax=conf.high),width=0.1) +
+  geom_point() +
+  geom_hline(aes(yintercept = 1),color="black",linetype="dashed") +
+  labs(x = "Variable",
+       y = "Estimated Exponentiated Coefficient",
+       color = "Statistical \n Significance") +
+  theme_classic() + coord_flip() +
+  ggtitle("Confidence Intervals for Logistic Regression Analysis") +
+  theme(plot.title = element_text(hjust=0.5)) + 
+  theme(legend.position = "none")
+plotly::ggplotly(p)
+
+p
+```
+
+
